@@ -1,124 +1,100 @@
-name: wheels
+name: Wheels
 
+# Publish when a (published) GitHub Release is created.
 on:
   push:
     branches:
       - master
+      - 'releases/**'
     tags:
       - v*
-  pull_request:
-    branches:
-      - master
+  release:
+    types:
+      - published
 
 jobs:
-  build-and-test-cpp:
-    name: Build and test C++ library on ${{ matrix.os }}
+  build_wheels:
+    name: Build wheels on ${{matrix.arch}} for ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
         # os: [ubuntu-latest, windows-latest, macos-latest]
         arch: [x86_64, aarch64]
         os: [ubuntu-latest]
-        
 
     steps:
       - uses: actions/checkout@v2
-        with:
-          submodules: recursive
 
-      - name: Build and install
-        if: startsWith(matrix.os, 'ubuntu')
+      - uses: actions/setup-python@v2
+        name: Install Python
+        with:
+          python-version: '3.7'
+
+      - uses: docker/setup-qemu-action@v1
+        if:  ${{matrix.arch}} == 'aarch64'
+        name: Set up QEMU
+
+      - name: Install cibuildwheel
         run: |
-          cmake -DBUILD_TESTS=ON -DCMAKE_INSTALL_PREFIX=$PWD/install .
-          make install
-      - name: Build and install
-        if: startsWith(matrix.os, 'macos')
+          python -m pip install --upgrade cibuildwheel
+      - name: Build wheels
         run: |
-          cmake -DBUILD_TESTS=ON -DCMAKE_INSTALL_PREFIX=$PWD/install \
-            -DICU_INCLUDE_DIR=/usr/local/opt/icu4c/include \
-            -DICU_LIBRARY=/usr/local/opt/icu4c/lib/libicuuc.dylib .
-          make install
-      - name: Test
-        run: |
-          test/onmt_tokenizer_test test/data
-  check-python-style:
+          python -m cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_ARCHS_LINUX: ${{matrix.arch}}
+          CIBW_BUILD: "cp36-* cp37-* cp38-* cp39-*"
+          CIBW_BEFORE_ALL_LINUX: "yum -y update && yum install -y epel-release && yum install -y hdf5-devel zlib-devel bzip2-devel lzo-devel blosc-devel"
+          CIBW_BEFORE_BUILD: "pip install numpy numexpr cython>=0.29.21"
+          CIBW_ENVIRONMENT: "DISABLE_AVX2='TRUE'"
+
+      - uses: actions/upload-artifact@v2
+        with:
+          path: ./wheelhouse/*.whl
+
+  build_sdist:
+    name: Build source distribution
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v2
 
-      - name: Set up Python 3.6
-        uses: actions/setup-python@v2
+      - uses: actions/setup-python@v2
+        name: Install Python
         with:
-          python-version: 3.6
+          python-version: '3.7'
 
+      - name: Install APT packages
+        if: contains(${{ matrix.os }}, 'ubuntu')
+        run: |
+          sudo apt install libbz2-dev libhdf5-serial-dev liblzo2-dev
+          sudo apt install latexmk texlive-fonts-recommended texlive-latex-recommended texlive-latex-extra texlive-plain-generic
       - name: Install dependencies
         run: |
-          python -m pip install black==21.9b0 flake8==3.9.* isort==5.*
-      - name: Check code format with Black
-        working-directory: bindings/python
-        run: |
-          black --check .
-      - name: Check imports order with isort
-        working-directory: bindings/python
-        run: |
-          isort --check-only .
-      - name: Check code style with Flake8
-        working-directory: bindings/python
-        if: ${{ always() }}
-        run: |
-          flake8 .
-  build-and-test-python-wheels:
-    name: Build and test Python wheels on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-20.04, macos-10.15, windows-2019]
+          python -m pip install --upgrade setuptools pip wheel
+          python -m pip install -r requirements.txt
+          python -m pip install cython
+          python -m pip install sphinx>=1.1 sphinx_rtd_theme numpydoc ipython
+      - name: Build sdist
+        run: make PYTHON=python dist
 
-    steps:
-      - uses: actions/checkout@v2
+      - uses: actions/upload-artifact@v2
         with:
-          submodules: recursive
+          path: dist/*
 
-      - name: Build wheels
-        uses: pypa/cibuildwheel@v2.1.3
-        with:
-          package-dir: bindings/python
-          output-dir: wheelhouse
-        env:
-          CIBW_ENVIRONMENT_WINDOWS: TOKENIZER_ROOT='${{ github.workspace }}\install'
-          CIBW_BEFORE_ALL: bindings/python/tools/prepare_build_environment.sh
-          CIBW_BEFORE_ALL_WINDOWS: bash bindings/python/tools/prepare_build_environment_windows.sh
-          CIBW_BEFORE_BUILD: pip install pybind11==2.8.0
-          CIBW_MANYLINUX_X86_64_IMAGE: manylinux2010
-          CIBW_TEST_COMMAND: pytest {project}/bindings/python/test/test.py
-          CIBW_TEST_REQUIRES: pytest
-          CIBW_ARCHS: auto64
-          CIBW_SKIP: pp*
-
-      - name: Upload Python wheels
-        uses: actions/upload-artifact@v2
-        with:
-          name: python-wheels
-          path: wheelhouse
-
-
-  publish-python-wheels-on-pypi:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
-    needs: [build-and-test-cpp, build-and-test-python-wheels]
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download Python wheels
-        uses: actions/download-artifact@v2
-        with:
-          name: python-wheels
-
-      - name: Publish Python wheels to PyPI
-        uses: pypa/gh-action-pypi-publish@master
-        with:
-          user: ${{ secrets.PYPI_USERNAME }}
-          password: ${{ secrets.PYPI_PASSWORD }}
-          packages_dir: .
+#  upload_pypi:
+#    needs: [build_wheels, build_sdist]
+#    runs-on: ubuntu-latest
+#    # upload to PyPI on every tag starting with 'v'
+#    if: github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags/v')
+#    # alternatively, to publish when a GitHub Release is created, use the following rule:
+#    # if: github.event_name == 'release' && github.event.action == 'published'
+#    steps:
+#      - uses: actions/download-artifact@v2
+#        with:
+#          name: artifact
+#          path: dist
+#
+#      - uses: pypa/gh-action-pypi-publish@master
+#        with:
+#          user: __token__
+#          password: ${{ secrets.pypi_password }}
+#          # To test: repository_url: https://test.pypi.org/legacy/
