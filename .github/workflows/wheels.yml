@@ -68,7 +68,7 @@ jobs:
         run: |
           flake8 .
   build-and-test-python-wheels:
-    name: Build and test Python wheels on ${{ matrix.os }}
+    name: Build wheels on ${{matrix.arch}} for ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -91,6 +91,7 @@ jobs:
           package-dir: bindings/python
           output-dir: wheelhouse
         env:
+          CIBW_ARCHS_LINUX: ${{matrix.arch}}
           CIBW_ENVIRONMENT_WINDOWS: TOKENIZER_ROOT='${{ github.workspace }}\install'
           CIBW_BEFORE_ALL: bindings/python/tools/prepare_build_environment.sh
           CIBW_BEFORE_ALL_WINDOWS: bash bindings/python/tools/prepare_build_environment_windows.sh
